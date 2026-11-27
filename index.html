@@ -42,7 +42,17 @@
   <p>عدّي من زحمة القاهرة وأوعى تخبط!</p>
   <p class="small">اسحب يمين وشمال أو استخدم الأسهم عشان تغيّر الحارة</p>
   <button id="startBtn" disabled>بيجهز...</button>
+  <p class="small" style="margin-top:16px">الجودة:</p>
+  <div id="quality" style="direction:ltr;display:flex;gap:8px;margin-top:6px">
+    <button data-q="low" class="qbtn">ضعيفة</button>
+    <button data-q="medium" class="qbtn">وسط</button>
+    <button data-q="high" class="qbtn">عالية</button>
+  </div>
 </div>
+<style>
+  .qbtn { margin-top:0 !important; padding:8px 18px !important; font-size:15px !important; background:#3a2c26 !important; box-shadow:0 3px 0 #241a16 !important; }
+  .qbtn.active { background:#e2543e !important; box-shadow:0 3px 0 #a03826 !important; }
+</style>
 <div id="gameover" class="overlay hidden">
   <h1>خبطت! 💥</h1>
   <p id="finalScore"></p>
@@ -51,6 +61,10 @@
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/RGBELoader.js"></script>
+<script src="assets-0.js"></script>
+<script src="assets-1.js"></script>
+<script src="assets-2.js"></script>
 <script src="models/tuk-tuk-0.js"></script>
 <script src="models/tuk-tuk-1.js"></script>
 <script src="models/tuk-tuk-2.js"></script>
@@ -82,6 +96,9 @@
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.8;
 
   const scene = new THREE.Scene();
   const SKY = 0xf2cf9a;
@@ -100,9 +117,9 @@
   resize();
 
   // ---------- Lights ----------
-  const hemi = new THREE.HemisphereLight(0xfff3da, 0x8a6f4d, 0.75);
+  const hemi = new THREE.HemisphereLight(0xfff3da, 0x8a6f4d, 0.4);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffe2b0, 1.15);
+  const sun = new THREE.DirectionalLight(0xffe2b0, 0.95);
   sun.position.set(18, 34, 12);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
@@ -115,16 +132,38 @@
   // ---------- Road ----------
   const ROAD_HALF = 6.2;
   const LANES = [-3, 0, 3];
+  function texFromB64(b64, repeatX, repeatY, srgb) {
+    const t = new THREE.TextureLoader().load(b64ToUrl(b64));
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(repeatX, repeatY);
+    if (srgb) t.encoding = THREE.sRGBEncoding;
+    t.anisotropy = 4;
+    return t;
+  }
+  function b64ToUrl(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+  }
+  const roadMat = new THREE.MeshStandardMaterial({
+    map: texFromB64(TEX_ASPHALT, 2, 60, true),
+    normalMap: texFromB64(TEX_ASPHALT_N, 2, 60, false),
+    color: 0x5a5a5a, roughness: 0.95, metalness: 0.0
+  });
   const road = new THREE.Mesh(
     new THREE.PlaneGeometry(ROAD_HALF * 2 + 1.4, 400),
-    new THREE.MeshLambertMaterial({ color: 0x35302c })
+    roadMat
   );
   road.rotation.x = -Math.PI / 2;
   road.position.z = -160;
   road.receiveShadow = true;
   scene.add(road);
 
-  const sideMat = new THREE.MeshLambertMaterial({ color: 0x9c8468 });
+  const sideMat = new THREE.MeshStandardMaterial({
+    map: texFromB64(TEX_PAVING, 2, 60, true),
+    color: 0x9a8f80, roughness: 0.9, metalness: 0.0
+  });
   for (const s of [-1, 1]) {
     const sw = new THREE.Mesh(new THREE.PlaneGeometry(9, 400), sideMat);
     sw.rotation.x = -Math.PI / 2;
@@ -158,13 +197,37 @@
         g.fillRect(x, y, 9, 11);
     return new THREE.CanvasTexture(c);
   }
-  const facades = [
-    facadeTexture('#c9a97e', '#5e4a33'),
-    facadeTexture('#b98d63', '#4f3d2a'),
-    facadeTexture('#d8c39a', '#6b5638'),
-    facadeTexture('#a8875f', '#453423')
-  ];
-  const buildingMats = facades.map(t => new THREE.MeshLambertMaterial({ map: t }));
+  // realistic facades: plaster photo texture + shaded window grid, tinted variants
+  function realFacade(tint) {
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 512;
+    const g = c.getContext('2d');
+    const t = new THREE.CanvasTexture(c);
+    t.encoding = THREE.sRGBEncoding;
+    const img = new Image();
+    img.onload = () => {
+      g.drawImage(img, 0, 0, 256, 512);
+      g.fillStyle = tint;
+      g.globalAlpha = 0.45; g.fillRect(0, 0, 256, 512); g.globalAlpha = 1;
+      g.fillStyle = 'rgba(60,45,30,.25)'; g.fillRect(0, 0, 256, 512);
+      for (let y = 24; y < 492; y += 56) {
+        for (let x = 20; x < 236; x += 52) {
+          g.fillStyle = '#2c3844'; g.fillRect(x, y, 32, 40);
+          g.fillStyle = 'rgba(255,255,255,.18)'; g.fillRect(x + 3, y + 3, 26, 12);
+          g.fillStyle = '#8a7a62'; g.fillRect(x - 2, y + 40, 36, 4);
+        }
+      }
+      t.needsUpdate = true;
+    };
+    img.src = b64ToUrl(TEX_FACADE);
+    return t;
+  }
+  const facades = [realFacade('#c9a97e'), realFacade('#b98d63'), realFacade('#d8c39a'), realFacade('#a8875f')];
+  const buildingMats = facades.map(t => {
+    const m = new THREE.MeshStandardMaterial({ map: t, roughness: 0.9, metalness: 0.0 });
+    m.envMapIntensity = 0.5;
+    return m;
+  });
   const buildings = [];
   for (let i = 0; i < 26; i++) {
     const w = 5 + Math.random() * 5;
@@ -232,7 +295,12 @@
     const wrap = new THREE.Group();
     wrap.add(inner);
     if (faceAway) wrap.rotation.y = Math.PI;
-    wrap.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    wrap.traverse(o => {
+      if (o.isMesh) {
+        o.castShadow = true;
+        if (o.material) o.material.envMapIntensity = 0.55;
+      }
+    });
     const s2 = new THREE.Box3().setFromObject(wrap).getSize(new THREE.Vector3());
     wrap.userData.half = { w: s2.x / 2, l: s2.z / 2 };
     return wrap;
@@ -426,6 +494,44 @@
     else move(e.changedTouches[0].clientX > window.innerWidth / 2 ? 1 : -1);
     touchX = null;
   }, { passive: true });
+
+  // ---------- Quality + environment ----------
+  let envTex = null, hdriLoading = false;
+  function applyQuality(q) {
+    localStorage.setItem('tuktuk3d_q', q);
+    document.querySelectorAll('.qbtn').forEach(b => b.classList.toggle('active', b.dataset.q === q));
+    if (q === 'high') { renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); sun.shadow.mapSize.set(2048, 2048); }
+    else if (q === 'medium') { renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); sun.shadow.mapSize.set(1024, 1024); }
+    else { renderer.setPixelRatio(1); sun.shadow.mapSize.set(512, 512); }
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+    if (q === 'low') {
+      scene.environment = null;
+      scene.background = new THREE.Color(SKY);
+    } else if (envTex) {
+      scene.environment = envTex;
+      scene.background = envTex;
+    } else if (!hdriLoading) {
+      hdriLoading = true;
+      new THREE.RGBELoader().setDataType(THREE.HalfFloatType).load(
+        'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/kloofendal_48d_partly_cloudy_puresky_1k.hdr',
+        tex => {
+          const pm = new THREE.PMREMGenerator(renderer);
+          pm.compileEquirectangularShader();
+          envTex = pm.fromEquirectangular(tex).texture;
+          tex.dispose(); pm.dispose();
+          if (localStorage.getItem('tuktuk3d_q') !== 'low') {
+            scene.environment = envTex;
+            scene.background = envTex;
+            scene.fog = null;
+          }
+        },
+        undefined,
+        () => { hdriLoading = false; }
+      );
+    }
+  }
+  document.querySelectorAll('.qbtn').forEach(b => b.addEventListener('click', () => applyQuality(b.dataset.q)));
+  applyQuality(localStorage.getItem('tuktuk3d_q') || 'medium');
 
   startBtn.addEventListener('click', start);
   document.getElementById('retryBtn').addEventListener('click', start);
