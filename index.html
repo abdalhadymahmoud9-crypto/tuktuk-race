@@ -26,6 +26,7 @@
     box-shadow: 0 4px 0 #a03826;
   }
   .overlay button:active { transform: translateY(3px); box-shadow: none; }
+  .overlay button:disabled { background: #7a4a40; box-shadow: 0 4px 0 #4a2a24; cursor: default; }
   .hidden { display: none; }
   .small { font-size: 14px !important; color: #cbb !important; }
 </style>
@@ -40,7 +41,7 @@
   <h1>🛺 سباق التوك توك</h1>
   <p>عدّي من زحمة القاهرة وأوعى تخبط!</p>
   <p class="small">اسحب يمين وشمال أو استخدم الأسهم عشان تغيّر الحارة</p>
-  <button id="startBtn">يلا بينا</button>
+  <button id="startBtn" disabled>بيجهز...</button>
 </div>
 <div id="gameover" class="overlay hidden">
   <h1>خبطت! 💥</h1>
@@ -49,6 +50,21 @@
   <button id="retryBtn">حاول تاني</button>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="models/tuk-tuk-0.js"></script>
+<script src="models/tuk-tuk-1.js"></script>
+<script src="models/tuk-tuk-2.js"></script>
+<script src="models/sedan-0.js"></script>
+<script src="models/sedan-1.js"></script>
+<script src="models/sedan-2.js"></script>
+<script src="models/sedan-3.js"></script>
+<script src="models/minivan-0.js"></script>
+<script src="models/minivan-1.js"></script>
+<script src="models/minivan-2.js"></script>
+<script src="models/delivery-van-0.js"></script>
+<script src="models/delivery-van-1.js"></script>
+<script src="models/delivery-van-2.js"></script>
+<script src="models/delivery-van-3.js"></script>
 <script>
 (() => {
   // ---------- UI ----------
@@ -58,6 +74,7 @@
   const gameover = document.getElementById('gameover');
   const finalScore = document.getElementById('finalScore');
   const finalBest = document.getElementById('finalBest');
+  const startBtn = document.getElementById('startBtn');
 
   // ---------- Renderer / scene ----------
   const canvas = document.getElementById('game');
@@ -98,8 +115,10 @@
   // ---------- Road ----------
   const ROAD_HALF = 6.2;
   const LANES = [-3, 0, 3];
-  const roadMat = new THREE.MeshLambertMaterial({ color: 0x35302c });
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_HALF * 2 + 1.4, 400), roadMat);
+  const road = new THREE.Mesh(
+    new THREE.PlaneGeometry(ROAD_HALF * 2 + 1.4, 400),
+    new THREE.MeshLambertMaterial({ color: 0x35302c })
+  );
   road.rotation.x = -Math.PI / 2;
   road.position.z = -160;
   road.receiveShadow = true;
@@ -114,7 +133,6 @@
     scene.add(sw);
   }
 
-  // lane dashes (recycled)
   const dashMat = new THREE.MeshBasicMaterial({ color: 0xe8e0d0 });
   const dashGeo = new THREE.PlaneGeometry(0.18, 2.2);
   const dashes = [];
@@ -138,8 +156,7 @@
     for (let y = 10; y < 118; y += 18)
       for (let x = 8; x < 56; x += 16)
         g.fillRect(x, y, 9, 11);
-    const t = new THREE.CanvasTexture(c);
-    return t;
+    return new THREE.CanvasTexture(c);
   }
   const facades = [
     facadeTexture('#c9a97e', '#5e4a33'),
@@ -147,7 +164,6 @@
     facadeTexture('#d8c39a', '#6b5638'),
     facadeTexture('#a8875f', '#453423')
   ];
-
   const buildingMats = facades.map(t => new THREE.MeshLambertMaterial({ map: t }));
   const buildings = [];
   for (let i = 0; i < 26; i++) {
@@ -192,82 +208,74 @@
     palms.push(p);
   }
 
-  // ---------- Tuk-tuk ----------
-  const tuktuk = new THREE.Group();
-  {
+  // ---------- Model loading ----------
+  function glbBuf(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  }
+  // normalize a parsed GLB scene: scale so its longest horizontal side = targetLen,
+  // center on origin, ground at y=0; faceAway rotates to face -z
+  function prepModel(gltfScene, targetLen, faceAway) {
+    const inner = gltfScene;
+    const box = new THREE.Box3().setFromObject(inner);
+    const size = box.getSize(new THREE.Vector3());
+    const scale = targetLen / Math.max(size.x, size.z);
+    inner.scale.setScalar(scale);
+    const box2 = new THREE.Box3().setFromObject(inner);
+    inner.position.set(
+      -(box2.min.x + box2.max.x) / 2,
+      -box2.min.y,
+      -(box2.min.z + box2.max.z) / 2
+    );
+    const wrap = new THREE.Group();
+    wrap.add(inner);
+    if (faceAway) wrap.rotation.y = Math.PI;
+    wrap.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    const s2 = new THREE.Box3().setFromObject(wrap).getSize(new THREE.Vector3());
+    wrap.userData.half = { w: s2.x / 2, l: s2.z / 2 };
+    return wrap;
+  }
+
+  const loader = new THREE.GLTFLoader();
+  function parseModel(b64, targetLen, faceAway) {
+    return new Promise((resolve) => {
+      loader.parse(glbBuf(b64), '',
+        gltf => resolve(prepModel(gltf.scene, targetLen, faceAway)),
+        () => resolve(null));
+    });
+  }
+
+  // ---------- Box fallbacks ----------
+  function boxTukTuk() {
+    const tuktuk = new THREE.Group();
     const yellow = new THREE.MeshLambertMaterial({ color: 0xf2a71b });
     const blue = new THREE.MeshLambertMaterial({ color: 0x1b6ec2 });
     const dark = new THREE.MeshLambertMaterial({ color: 0x222222 });
     const glass = new THREE.MeshLambertMaterial({ color: 0xbfe8ff });
-
     const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.9, 2.3), yellow);
-    body.position.y = 0.75;
-    body.castShadow = true;
-    tuktuk.add(body);
-
+    body.position.y = 0.75; body.castShadow = true; tuktuk.add(body);
     const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.85, 1.5), blue);
-    cabin.position.set(0, 1.55, 0.25);
-    cabin.castShadow = true;
-    tuktuk.add(cabin);
-
+    cabin.position.set(0, 1.55, 0.25); cabin.castShadow = true; tuktuk.add(cabin);
     const shield = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.6, 0.08), glass);
-    shield.position.set(0, 1.5, -0.55);
-    shield.rotation.x = 0.25;
-    tuktuk.add(shield);
-
+    shield.position.set(0, 1.5, -0.55); shield.rotation.x = 0.25; tuktuk.add(shield);
     const wheelGeo = new THREE.CylinderGeometry(0.28, 0.28, 0.2, 10);
     wheelGeo.rotateZ(Math.PI / 2);
     for (const [x, z] of [[-0.7, 0.7], [0.7, 0.7], [0, -0.85]]) {
       const w = new THREE.Mesh(wheelGeo, dark);
-      w.position.set(x, 0.28, z);
-      w.castShadow = true;
-      tuktuk.add(w);
+      w.position.set(x, 0.28, z); w.castShadow = true; tuktuk.add(w);
     }
-    const light = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 8), new THREE.MeshBasicMaterial({ color: 0xfff8b0 }));
-    light.position.set(0, 0.8, -1.18);
-    tuktuk.add(light);
+    tuktuk.userData.half = { w: 0.8, l: 1.2 };
+    return tuktuk;
   }
-  scene.add(tuktuk);
-
-  // ---------- Obstacles ----------
-  const carColors = [0x3e6ae2, 0xc23b2e, 0xe8e3d8, 0x3f8f4f, 0x8a4fb0];
-  function makeCar() {
+  function boxCar(color) {
     const g = new THREE.Group();
-    const color = carColors[Math.floor(Math.random() * carColors.length)];
     const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.6, 3.4), new THREE.MeshLambertMaterial({ color }));
-    body.position.y = 0.55; body.castShadow = true;
-    g.add(body);
+    body.position.y = 0.55; body.castShadow = true; g.add(body);
     const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.55, 1.7), new THREE.MeshLambertMaterial({ color: 0x2a2f38 }));
-    cabin.position.set(0, 1.1, 0.2); cabin.castShadow = true;
-    g.add(cabin);
-    const wg = new THREE.CylinderGeometry(0.3, 0.3, 0.25, 8); wg.rotateZ(Math.PI / 2);
-    const wm = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
-    for (const [x, z] of [[-0.85, 1.1], [0.85, 1.1], [-0.85, -1.1], [0.85, -1.1]]) {
-      const w = new THREE.Mesh(wg, wm); w.position.set(x, 0.3, z); g.add(w);
-    }
+    cabin.position.set(0, 1.1, 0.2); cabin.castShadow = true; g.add(cabin);
     g.userData.half = { w: 0.95, l: 1.75 };
-    return g;
-  }
-  function makeMicrobus() {
-    const g = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.9, 4.2), new THREE.MeshLambertMaterial({ color: 0xe8e3d8 }));
-    body.position.y = 1.15; body.castShadow = true;
-    g.add(body);
-    const band = new THREE.Mesh(new THREE.BoxGeometry(2.02, 0.5, 3.2), new THREE.MeshLambertMaterial({ color: 0x2a2f38 }));
-    band.position.set(0, 1.55, 0.2);
-    g.add(band);
-    g.userData.half = { w: 1.05, l: 2.15 };
-    return g;
-  }
-  function makeTruck() {
-    const g = new THREE.Group();
-    const box = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.4, 4.6), new THREE.MeshLambertMaterial({ color: 0x7a4a2b }));
-    box.position.set(0, 1.6, 0.4); box.castShadow = true;
-    g.add(box);
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.4, 1.5), new THREE.MeshLambertMaterial({ color: 0x59351e }));
-    cab.position.set(0, 0.9, 3.0); cab.castShadow = true;
-    g.add(cab);
-    g.userData.half = { w: 1.15, l: 2.7 };
     return g;
   }
   function makePothole() {
@@ -278,21 +286,23 @@
     g.userData.half = { w: 0.8, l: 0.8 };
     return g;
   }
-  const makers = [makeCar, makeCar, makeMicrobus, makeTruck, makePothole];
+
+  // ---------- Game objects (filled when models are ready) ----------
+  let tuktuk = null;
+  let makers = null;
 
   const obstacles = [];
   function spawn() {
-    let lane = Math.floor(Math.random() * 3);
-    // keep at least one lane free near each spawn depth
+    let laneN = Math.floor(Math.random() * 3);
     const near = obstacles.filter(o => o.position.z < -95 && o.position.z > -140);
     const used = new Set(near.map(o => o.userData.lane));
     if (used.size >= 2) {
       const free = [0, 1, 2].find(l => !used.has(l));
-      if (free !== undefined) lane = free;
+      if (free !== undefined) laneN = free;
     }
     const o = makers[Math.floor(Math.random() * makers.length)]();
-    o.position.set(LANES[lane], 0, -130);
-    o.userData.lane = lane;
+    o.position.set(LANES[laneN], 0, -130);
+    o.userData.lane = laneN;
     scene.add(o);
     obstacles.push(o);
   }
@@ -322,6 +332,7 @@
   let speed, baseSpeed = 16, lastTime = 0, spawnTimer = 0, puffTimer = 0;
 
   function start() {
+    if (!tuktuk) return;
     for (const o of obstacles) scene.remove(o);
     obstacles.length = 0;
     lane = 1; playerX = 0;
@@ -393,7 +404,7 @@
     requestAnimationFrame(loop);
     const dt = Math.min(0.05, (t - lastTime) / 1000);
     lastTime = t;
-    if (running) update(dt);
+    if (running && tuktuk) update(dt);
     render();
   }
 
@@ -416,11 +427,33 @@
     touchX = null;
   }, { passive: true });
 
-  document.getElementById('startBtn').addEventListener('click', start);
+  startBtn.addEventListener('click', start);
   document.getElementById('retryBtn').addEventListener('click', start);
-
   bestEl.textContent = 'أفضل: ' + best;
-  if (location.hash === '#autoplay') { start(); for (let i = 0; i < 90 && running; i++) update(0.05); }
+
+  // ---------- Boot: load real models, fall back to boxes ----------
+  Promise.all([
+    parseModel(GLB_TUK_TUK, 2.6, true),
+    parseModel(GLB_SEDAN, 3.6, false),
+    parseModel(GLB_MINIVAN, 4.2, false),
+    parseModel(GLB_DELIVERY_VAN, 4.8, false)
+  ]).then(([tt, sedan, minivan, van]) => {
+    tuktuk = tt || boxTukTuk();
+    scene.add(tuktuk);
+    const sedanT = sedan || boxCar(0x3e6ae2);
+    const vanT = minivan || null;
+    const truckT = van || null;
+    makers = [
+      () => sedanT.clone(true),
+      () => sedanT.clone(true),
+      vanT ? () => vanT.clone(true) : () => boxCar(0xe8e3d8),
+      truckT ? () => truckT.clone(true) : () => boxCar(0x7a4a2b),
+      makePothole
+    ];
+    startBtn.disabled = false;
+    startBtn.textContent = 'يلا بينا';
+    if (location.hash === '#autoplay') { start(); for (let i = 0; i < 90 && running; i++) update(0.05); }
+  });
   requestAnimationFrame(loop);
 })();
 </script>
